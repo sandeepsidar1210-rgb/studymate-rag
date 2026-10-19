@@ -14,10 +14,18 @@ from langchain_community.vectorstores import FAISS
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 
-def build_vector_store():
-    # Load the PDF
-    loader = PyPDFLoader(str(Path(__file__).parent / "notes.pdf"))
-    documents = loader.load()
+def build_vector_store(pdf_paths):
+
+    """Load uploaded PDFs and build a searchable FAISS index."""
+    documents = []
+
+
+    for pdf_path in pdf_paths:
+        loader = PyPDFLoader(str(pdf_path))
+        documents.extend(loader.load())
+
+    if not documents:
+        raise ValueError("No readable pages were found in the uploaded PDFs.")
 
     # Split into chunks
     splitter = RecursiveCharacterTextSplitter(
@@ -25,6 +33,9 @@ def build_vector_store():
         chunk_overlap=50,
     )
     chunks = splitter.split_documents(documents)
+
+    if not chunks:
+        raise ValueError("No text could be extracted from these PDFs.")
 
     # Create embeddings
     embeddings = GoogleGenerativeAIEmbeddings(
@@ -41,7 +52,8 @@ def build_vector_store():
 
 
 def answer_question(question, vector_store, llm):
-    # Retrieve relevant chunks
+    """Retrieve relevant text and generate an answer."""
+
     results = vector_store.similarity_search(question, k=3)
 
     # Build context and source references
