@@ -52,18 +52,48 @@ def build_vector_store(pdf_paths):
 
 
 
+
 def answer_question(question, vector_store, llm, chat_history=None):
-    """Answer a question using retrieved notes and conversation history."""
+    """Answer questions using conversation-aware retrieval."""
 
     chat_history = chat_history or []
 
-    # Retrieve relevant chunks from the uploaded PDFs.
-    results = vector_store.similarity_search(question, k=4)
+    # Step 1: Rewrite follow-up questions into standalone questions.
+    history_text = "\n".join(
+        f"{message['role']}: {message['content']}"
+        for message in chat_history[-6:]
+    )
+
+    rewrite_prompt = f"""
+Convert the current question into a standalone search query
+that can be understood without the conversation history.
+
+Use the history only to resolve references such as "it",
+"that", or "the second type".
+Do not answer the question.
+If it is already clear, keep its meaning unchanged.
+Return only the standalone query.
+
+Conversation history:
+{history_text}
+
+Current question:
+{question}
+
+Standalone search query:
+"""
+
+    rewritten = llm.invoke(rewrite_prompt)
+    search_query = rewritten.content.strip()
+
+    # Step 2: Retrieve chunks using the standalone query.
+    results = vector_store.similarity_search(search_query, k=4)
 
     context = "\n\n".join(
         doc.page_content for doc in results
     )
 
+    # Step 3: Collect source filenames and page numbers.
     sources = []
     for doc in results:
         source_name = Path(
@@ -72,34 +102,29 @@ def answer_question(question, vector_store, llm, chat_history=None):
         page_number = doc.metadata.get("page", 0) + 1
         sources.append(f"{source_name}, page {page_number}")
 
-    # Include recent conversation turns for follow-up questions.
-    history_text = "\n".join(
-        f"{message['role']}: {message['content']}"
-        for message in chat_history[-6:]
-    )
-
+    # Step 4: Generate an answer grounded in retrieved context.
     prompt = f"""
-    You are StudyMate, an assistant that explains college notes
-    in simple, beginner-friendly language.
+You are StudyMate, an assistant that explains college notes
+in simple, beginner-friendly language.
 
-    Use the retrieved context as the source of factual answers.
-    Use conversation history only to understand follow-up questions.
-    Do not treat earlier assistant answers as proof of facts.
-    If the answer cannot be supported by the retrieved context,
-    say that the information could not be found in the notes.
-    Do not invent facts.
+Answer using the retrieved context.
+Use conversation history to understand the discussion, not as
+proof of facts.
+If the answer is not supported by the context, say that the
+information could not be found in the notes.
+Do not invent facts.
 
-    Conversation history:
-    {history_text}
+Conversation history:
+{history_text}
 
-    Retrieved context:
-    {context}
+Retrieved context:
+{context}
 
-    Current question:
-    {question}
+Current question:
+{question}
 
-    Answer:
-    """
+Answer:
+"""
 
     response = llm.invoke(prompt)
 
