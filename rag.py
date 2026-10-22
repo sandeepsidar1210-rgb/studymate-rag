@@ -51,13 +51,18 @@ def build_vector_store(pdf_paths):
     return vector_store
 
 
-def answer_question(question, vector_store, llm):
-    """Retrieve relevant text and generate an answer."""
 
-    results = vector_store.similarity_search(question, k=3)
+def answer_question(question, vector_store, llm, chat_history=None):
+    """Answer a question using retrieved notes and conversation history."""
 
-    # Build context and source references
-    context = "\n\n".join(doc.page_content for doc in results)
+    chat_history = chat_history or []
+
+    # Retrieve relevant chunks from the uploaded PDFs.
+    results = vector_store.similarity_search(question, k=4)
+
+    context = "\n\n".join(
+        doc.page_content for doc in results
+    )
 
     sources = []
     for doc in results:
@@ -67,21 +72,34 @@ def answer_question(question, vector_store, llm):
         page_number = doc.metadata.get("page", 0) + 1
         sources.append(f"{source_name}, page {page_number}")
 
-    # Ask the LLM to answer from the context
+    # Include recent conversation turns for follow-up questions.
+    history_text = "\n".join(
+        f"{message['role']}: {message['content']}"
+        for message in chat_history[-6:]
+    )
+
     prompt = f"""
-You are StudyMate, an assistant that explains college notes
-in simple, beginner-friendly language.
+    You are StudyMate, an assistant that explains college notes
+    in simple, beginner-friendly language.
 
-Answer using only the provided context.
-If the answer is missing, say it could not be found in the notes.
-Do not invent facts.
+    Use the retrieved context as the source of factual answers.
+    Use conversation history only to understand follow-up questions.
+    Do not treat earlier assistant answers as proof of facts.
+    If the answer cannot be supported by the retrieved context,
+    say that the information could not be found in the notes.
+    Do not invent facts.
 
-Context:
-{context}
+    Conversation history:
+    {history_text}
 
-Question:
-{question}
-"""
+    Retrieved context:
+    {context}
+
+    Current question:
+    {question}
+
+    Answer:
+    """
 
     response = llm.invoke(prompt)
 

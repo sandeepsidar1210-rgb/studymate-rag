@@ -4,3 +4,5 @@ __pycache__/
 *.py[cod]
 .streamlit/secrets.toml
 .vscode
+notes.pdf
+__init__.py

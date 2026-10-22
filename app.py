@@ -18,8 +18,14 @@ st.set_page_config(
     initial_sidebar_state="collapsed"
 )
 
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
+
 if "messages" not in st.session_state:
     st.session_state.messages = []
+
+if "processed_files" not in st.session_state:
+    st.session_state.processed_files = []
 
 st.title("📚 StudyMate")
 st.subheader("Your AI College Notes Assistant")
@@ -94,6 +100,7 @@ if question:
                     question,
                     st.session_state.vector_store,
                     llm,
+                    chat_history=st.session_state.messages[:-1],
                 )
 
                 st.markdown(answer)
