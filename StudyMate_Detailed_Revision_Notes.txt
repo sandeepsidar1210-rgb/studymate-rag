@@ -1,0 +1,749 @@
+STUDYMATE — APPLIED AI AND RAG REVISION NOTES
+Detailed revision notes based on what we have built and discussed so far.
+
+============================================================
+HOW TO USE THESE NOTES
+============================================================
+
+These notes explain the ideas behind StudyMate, not just code to memorize. Read each concept, trace the pipeline, and then try explaining it aloud in your own words. Code examples are teaching patterns; your project may use different names or versions. Model names and APIs can change, so check compatibility if old tutorial code stops working.
+
+============================================================
+1. THE GOAL OF STUDYMATE
+============================================================
+
+StudyMate is an AI College Notes Assistant. A user uploads college notes as PDFs and asks questions about them. The app retrieves relevant passages from the notes and asks a large language model (LLM) to generate a readable answer grounded in that evidence.
+
+The project aims to:
+- Answer questions using uploaded notes.
+- Handle follow-up questions in a conversation.
+- Display source filenames and page numbers.
+- Admit when an answer cannot be found in the notes.
+- Provide a simple interface for asking questions.
+
+It combines practical Applied AI skills: Python structure, PDF processing, text chunking, embeddings, vector search, RAG, prompt design, conversation history, query rewriting, Streamlit state, metadata, and debugging.
+
+A working demo is only the starting point. A robust AI app also needs evaluation, trustworthy citations, error handling, privacy/security, logging, sensible limits, and deployment.
+
+============================================================
+2. THE FULL PIPELINE
+============================================================
+
+INDEXING / PREPARATION:
+1. Load the PDF.
+2. Extract text and page metadata.
+3. Split the text into smaller chunks.
+4. Convert each chunk into an embedding vector.
+5. Store vectors and their documents in FAISS.
+
+QUESTION ANSWERING:
+1. Receive the user's question.
+2. Use conversation history to understand a follow-up if necessary.
+3. Search the index for relevant chunks.
+4. Combine retrieved text into context.
+5. Send the context, history, and original question to the LLM.
+6. Display the answer and sources.
+
+Overall:
+
+PDF -> extracted text -> chunks -> embeddings -> FAISS index
+User question -> optional query rewriting -> retrieval -> context -> LLM -> answer + sources
+
+Indexing prepares searchable content. The app should not need to re-extract and re-embed the same PDFs for every question.
+
+============================================================
+3. WHAT IS AN LLM?
+============================================================
+
+LLM means Large Language Model. It processes and generates language. In StudyMate, it writes the natural-language answer.
+
+Do not confuse the components:
+- LLM: generates and interprets language.
+- Embedding model: converts text into numerical vectors.
+- FAISS: searches vectors for similar items.
+- PDF loader: extracts document text.
+- Streamlit: provides the interface and session state.
+
+An LLM can sound confident while being wrong. RAG supplies evidence from the user's notes and prompts the model to use it. RAG can reduce unsupported answers but does not guarantee correctness.
+
+In LangChain, a call such as:
+
+    response = llm.invoke(prompt)
+
+sends a prompt to the configured model. With many chat-model integrations, the text is available as:
+
+    response.content
+
+The exact response format depends on the integration.
+
+============================================================
+4. PDF LOADING AND DOCUMENTS
+============================================================
+
+A PDF loader extracts text and produces document objects containing text and metadata. We used LangChain's community PyPDFLoader integration.
+
+Example:
+
+    from langchain_community.document_loaders import PyPDFLoader
+
+    loader = PyPDFLoader("notes.pdf")
+    pages = loader.load()
+
+Each document commonly contains:
+- page_content: extracted text;
+- metadata: source filename/path, page index, and sometimes other PDF details.
+
+Example concept:
+
+    Document(
+        page_content="CPU scheduling chooses a ready process...",
+        metadata={"source": "notes.pdf", "page": 2}
+    )
+
+Page metadata is commonly zero-based: page 0 is the first page. To display a human-facing page number, code often adds one:
+
+    display_page = doc.metadata.get("page", 0) + 1
+
+Do not add one twice. A PDF viewer's printed page label can differ from its physical page index because of covers or custom numbering.
+
+PDF extraction is imperfect. Scanned pages, diagrams, tables, columns, and complex layouts can cause missing or incorrectly ordered text. If text is visibly in the PDF but absent from extracted text, investigate extraction or OCR before blaming FAISS.
+
+Our test PDF produced 36 pages and 44 chunks. These are results for that document and splitter configuration, not universal values.
+
+============================================================
+5. CHUNKING
+============================================================
+
+A chunk is a smaller piece of extracted text. Instead of embedding and retrieving a whole PDF as one giant unit, the app divides it into manageable sections.
+
+Why chunk?
+- Search can return a focused passage instead of a whole document.
+- The LLM receives relevant context rather than a huge PDF dump.
+- Smaller pieces help manage model context limits.
+- Metadata can connect each passage to its source page.
+
+Chunk size is a trade-off:
+- Very large chunks may contain unrelated information and reduce precision.
+- Very small chunks may separate a definition from its explanation or example.
+- Overlap preserves context near boundaries.
+- Too much overlap creates redundant chunks and consumes extra storage/context.
+
+For example, a splitter configured for roughly 800 characters per chunk and 100 characters of overlap may repeat about 100 characters between adjacent chunks. Exact behavior depends on the splitter and text.
+
+Metadata should be preserved through splitting so each chunk retains source and page information.
+
+Troubleshooting:
+- Relevant text absent from all extracted chunks: inspect PDF loading/OCR.
+- Relevant text exists in chunks but is not retrieved: inspect query, embeddings, chunk size, and search settings.
+- Correct text is retrieved but the answer is bad: inspect context construction and the answer prompt.
+
+============================================================
+6. EMBEDDINGS
+============================================================
+
+An embedding is a list of numbers representing semantic features of text in a vector space. An embedding model produces it.
+
+Illustration only:
+
+    "The CPU scheduler selects a ready process."
+        -> [0.12, -0.08, 0.41, ...]
+
+Text with similar meanings may have vectors close to each other according to a similarity or distance measure. For example, “What is the ready queue?” and “Where do runnable processes wait for CPU time?” use different words but are related in meaning.
+
+Embeddings are not the final answer, an LLM, a database, or a guarantee of correct retrieval.
+
+The embedding model converts both document chunks and search queries into compatible vectors. If the query and stored documents use incompatible embedding models or dimensions, retrieval can fail or be invalid.
+
+Similarity methods include cosine similarity and vector distance. The practical idea is enough for now: represent the query as a vector and search for nearby stored chunk vectors. Exact scoring depends on the index and configuration.
+
+============================================================
+7. FAISS AND VECTOR STORES
+============================================================
+
+FAISS is a library for efficient similarity search over vectors. It is not an LLM and does not generate answers. It searches an index of numerical vectors.
+
+A vector store typically connects:
+- an embedding vector;
+- its associated chunk text;
+- metadata such as source and page.
+
+Conceptual flow:
+
+    chunk text -> embedding model -> vector
+    vector + document metadata -> FAISS index
+    question -> query embedding -> similarity search
+    search -> retrieved document chunks
+
+Example:
+
+    results = vector_store.similarity_search(query, k=4)
+
+This asks for up to four chunks similar to the query. k=4 does not mean four pages, four correct answers, or four guaranteed-relevant passages.
+
+Similarity search returns related material, not verified facts. A chunk can be on the same topic without containing the exact answer.
+
+An in-memory vector store may disappear when the process/session resets. A persistent index can be saved and reloaded, but must be managed carefully and rebuilt if documents or embedding settings change. Do not load untrusted serialized index files blindly.
+
+============================================================
+8. RAG — RETRIEVAL-AUGMENTED GENERATION
+============================================================
+
+RAG stands for Retrieval-Augmented Generation.
+
+- Retrieval: find relevant text from a knowledge source.
+- Augmented: add that text to the model prompt as context.
+- Generation: ask the LLM to write an answer using the question and context.
+
+A basic RAG pipeline:
+
+    question
+      -> retrieve relevant chunks
+      -> combine chunks into context
+      -> prompt with context + question
+      -> invoke LLM
+      -> answer
+
+Illustrative code:
+
+    results = vector_store.similarity_search(question, k=4)
+
+    context = "\n\n".join(
+        doc.page_content for doc in results
+    )
+
+    prompt = f'''
+    Answer using the context below.
+    If the answer is not supported by the context,
+    say it could not be found in the notes.
+
+    Context:
+    {context}
+
+    Question:
+    {question}
+    '''
+
+    response = llm.invoke(prompt)
+    answer = response.content
+
+RAG does not automatically train or fine-tune the model. It supplies retrieved information at answer time. Answer quality depends on extraction, chunking, embeddings, retrieval, context construction, prompt instructions, and the LLM.
+
+============================================================
+9. CONTEXT CONSTRUCTION
+============================================================
+
+After retrieval, the app must actually place the retrieved text into the prompt. Retrieving documents in Python does not automatically make them available to the LLM.
+
+Example:
+
+    context = "\n\n".join(
+        doc.page_content for doc in results
+    )
+
+This loops over documents, takes each page_content string, and joins the passages with blank lines. The result is a single context string.
+
+Context should be relevant, readable, and not excessively long. Too many irrelevant chunks can distract the model. Too little context may omit necessary facts. Duplicates and ordering can also affect answer quality.
+
+Conversation history helps interpret intent, but should not be treated as factual evidence about the notes. Previous AI answers may themselves contain errors.
+
+============================================================
+10. ANSWER GENERATION AND GROUNDED PROMPTS
+============================================================
+
+The final prompt can include:
+- instructions for the assistant;
+- relevant conversation history;
+- retrieved context;
+- the user's original question.
+
+Useful instructions:
+- Explain in simple language.
+- Use retrieved evidence.
+- Combine relevant facts from multiple chunks when appropriate.
+- Do not invent unsupported technical claims.
+- If there is no useful evidence, say the information could not be found in the notes.
+- Use history to understand follow-ups, but do not treat previous AI answers as proof.
+
+Prompts guide behavior but do not guarantee it. Testing is necessary.
+
+Diagnosis:
+- Evidence is present but answer is wrong: inspect prompt, context formatting, model response, and conflicting passages.
+- Evidence is absent from retrieved context: investigate retrieval rather than changing only the answer prompt.
+- Evidence never came out of the PDF: fix extraction or OCR.
+- Question is unrelated to the notes: the app should not pretend the notes support an answer.
+
+============================================================
+11. CONVERSATION HISTORY AND MEMORY
+============================================================
+
+Conversation history is the sequence of previous messages, often stored as role/content pairs:
+
+    [
+        {"role": "user", "content": "What are scheduling types?"},
+        {"role": "assistant", "content": "Preemptive and non-preemptive."}
+    ]
+
+Conversational memory means the app uses relevant earlier turns to understand the current turn rather than treating every question as unrelated.
+
+Example:
+1. User: “What are the two types of CPU scheduling?”
+2. Assistant: “Preemptive and non-preemptive.”
+3. User: “Explain the second one.”
+4. The app should understand that “the second one” refers to non-preemptive scheduling.
+
+Memory is not automatically persistent storage. If history is in Streamlit session_state, it may survive reruns within the current session but be lost after refresh, session reset, or restart depending on the implementation. Cross-session memory needs persistent storage.
+
+Good practices:
+- Keep only relevant history or summarize older turns.
+- Do not treat earlier AI answers as unquestionable evidence.
+- Distinguish user messages from assistant messages.
+- Decide how history resets when a new PDF collection is uploaded.
+- Handle empty history safely.
+
+============================================================
+12. QUERY REWRITING FOR FOLLOW-UP QUESTIONS
+============================================================
+
+This is a key improvement added to StudyMate.
+
+Problem example:
+User: “What are the two types of CPU scheduling?”
+Assistant: “Preemptive and non-preemptive scheduling.”
+User: “Explain the second type in simpler words.”
+
+A human understands the reference. FAISS searching only the phrase “the second type in simpler words” might miss relevant passages because the query does not name the concept.
+
+Query rewriting uses the conversation history to turn a vague follow-up into a standalone search query, for example:
+
+    "Explain non-preemptive CPU scheduling in simpler words."
+
+The flow becomes:
+
+    history + current question
+        -> LLM rewrites a standalone search query
+        -> FAISS retrieves chunks using rewritten query
+        -> context is built
+        -> LLM answers original question using evidence and history
+
+Illustrative pattern:
+
+    history_text = "\n".join(
+        f"{message['role']}: {message['content']}"
+        for message in chat_history[-6:]
+    )
+
+    rewrite_prompt = f'''
+    Rewrite the current question as a standalone search query.
+    Use the history to resolve references.
+    Do not answer the question.
+    Return only the rewritten query.
+
+    Conversation history:
+    {history_text}
+
+    Current question:
+    {question}
+
+    Standalone search query:
+    '''
+
+    rewritten = llm.invoke(rewrite_prompt)
+    search_query = rewritten.content.strip()
+
+    results = vector_store.similarity_search(search_query, k=4)
+
+The exact function names may differ in your project.
+
+Key ideas:
+- The rewritten query is for retrieval.
+- The original user question remains the question answered at the end.
+- History resolves phrases such as “it,” “that,” or “the second type.”
+- If the question is already clear, the rewrite should preserve its meaning.
+- Query rewriting can improve retrieval but cannot guarantee the right chunks.
+- The rewriting model can misunderstand the conversation.
+- An extra LLM call adds latency and API cost.
+
+Do not confuse rewriting with generation: rewriting produces a search query; generation produces the final response.
+
+============================================================
+13. SOURCE METADATA AND CITATIONS
+============================================================
+
+A retrieved document may have metadata such as:
+
+    {"source": "notes.pdf", "page": 2}
+
+The source path identifies where the chunk came from. The page value is commonly zero-based, so code may add one for display.
+
+Example:
+
+    from pathlib import Path
+
+    source_name = Path(
+        doc.metadata.get("source", "Unknown source")
+    ).name
+
+    page_number = doc.metadata.get("page", 0) + 1
+
+Path(...).name turns a long path into a filename. For example, a temporary path ending in notes.pdf can be displayed as notes.pdf.
+
+A citation is useful only if the cited source supports the claim. Displaying all retrieved pages does not prove that each page supports every sentence. Citation quality must be evaluated separately from fluency.
+
+Future improvements may include:
+- preserving the original uploaded filename in metadata;
+- keeping page metadata through chunking;
+- associating answers with specific retrieved chunks;
+- displaying source excerpts or expandable citations;
+- checking whether cited passages support claims;
+- avoiding irrelevant pages in the source list.
+
+The terminal output in our test used a temporary Streamlit upload path. That is expected if uploads are saved to temporary files. The full path may not remain stable across runs.
+
+============================================================
+14. THE READY-QUEUE DEBUGGING EXAMPLE
+============================================================
+
+We tested:
+
+    "What is the ready queue in CPU scheduling?
+     Explain its purpose using the information in my uploaded notes."
+
+Initially, StudyMate said it could not find the exact definition, even though it retrieved related passages.
+
+We printed the retrieved chunks after similarity search:
+
+    print("\n--- RETRIEVED CHUNKS ---")
+
+    for i, doc in enumerate(results, start=1):
+        print(f"\nChunk {i}")
+        print("Source:", doc.metadata.get("source"))
+        print("Page:", doc.metadata.get("page", 0) + 1)
+        print(doc.page_content[:500])
+
+This prints each chunk's source, displayed page number, and first 500 characters. The slice [:500] limits terminal output; it does not change the stored chunk.
+
+Retrieved evidence included:
+- Page 3: the OS chooses which ready process should use the CPU next; the scheduler chooses a process that is in memory and ready to run.
+- Page 10: scheduling basics and a ready-queue diagram.
+- Page 5: scheduling transitions such as Running -> Ready and Waiting -> Ready.
+- Page 19: FCFS processes are served in the order they enter the ready queue; the first process is selected first.
+
+The evidence was relevant but spread across passages. We improved the answer-generation prompt to tell the LLM to combine relevant chunks, explain clearly, and state when there is no useful evidence.
+
+The next answer was better. In substance, it said:
+- the ready queue holds processes ready to execute and waiting for CPU time;
+- the scheduler chooses which process runs next;
+- FCFS selects processes in the order they entered the queue.
+
+This demonstrated that the prompt could combine evidence from multiple chunks. It did not prove the system is perfect; broader testing and citation checks remain necessary.
+
+What we learned:
+1. Do not guess which component failed.
+2. Inspect actual retrieved chunks.
+3. Determine whether evidence is present.
+4. Change the appropriate component.
+5. Run the same test again to compare results.
+
+============================================================
+15. HOW TO DIAGNOSE A WRONG ANSWER
+============================================================
+
+Follow this order when StudyMate answers poorly.
+
+STEP 1 — Inspect extracted PDF text.
+Does the text contain the fact? If not, investigate PDF extraction, scanned images, OCR, or layout.
+
+STEP 2 — Inspect chunks.
+Does the fact appear in any stored chunk? If not, investigate splitting, chunk size, overlap, or metadata.
+
+STEP 3 — Inspect retrieved results.
+Does similarity_search return the chunk with the fact? If not, investigate query wording, embeddings, index configuration, and retrieval strategy. Query rewriting may help with vague follow-ups.
+
+STEP 4 — Inspect context.
+Is retrieved text actually passed to the final prompt? Is it truncated, duplicated, or overwhelmed by irrelevant text?
+
+STEP 5 — Inspect prompt and answer.
+Does the prompt ask the model to use evidence? Does the answer combine the evidence correctly or introduce unsupported claims?
+
+STEP 6 — Inspect citations.
+Do the displayed pages support the answer? Are filenames and page numbers correct?
+
+Changing the wrong layer can hide a symptom without fixing the cause.
+
+============================================================
+16. STREAMLIT SESSION STATE
+============================================================
+
+Streamlit reruns the script when users interact with widgets. Values that need to persist between reruns can be stored in st.session_state.
+
+A variable must be initialized before it is accessed. Otherwise, an error can occur:
+
+    st.session_state has no attribute "vector_store"
+
+A common initialization pattern:
+
+    if "vector_store" not in st.session_state:
+        st.session_state.vector_store = None
+
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    if "processed_files" not in st.session_state:
+        st.session_state.processed_files = []
+
+This means:
+- initialize vector_store to None if it does not exist;
+- initialize messages as an empty list;
+- initialize processed_files as an empty list.
+
+Initialize early, before accessing these variables. Check that a vector store exists before searching:
+
+    if st.session_state.vector_store is not None:
+        # safe place to run retrieval
+        ...
+
+Session state is useful for chat messages, the current vector store, and processed-file status. It is not automatically permanent storage. A refresh or restart may require PDFs to be processed again depending on the app.
+
+============================================================
+17. PYTHON IMPORTS AND PROJECT STRUCTURE
+============================================================
+
+We saw a VS Code warning that the module "rag" could not be found.
+
+A line such as:
+
+    from rag import build_vector_store, answer_question
+
+means Python should locate a module named rag.py. If app.py and rag.py are in the same directory, this import generally works when the app is launched from the appropriate project directory.
+
+Check:
+- both files are in the intended directory;
+- the filename is exactly rag.py, not rag.py.txt;
+- the app is run from the project directory or the import path is configured;
+- VS Code uses the intended Python interpreter;
+- the language server warning is distinguished from an actual runtime error.
+
+A red underline does not always mean execution will fail, but it should be investigated.
+
+Useful Git commands when working inside nested folders:
+
+    git rev-parse --show-toplevel
+    git remote -v
+    git status
+
+- rev-parse --show-toplevel prints the Git repository root.
+- remote -v shows remote URLs.
+- status shows changed, staged, untracked, and ignored files.
+
+============================================================
+18. CHILD REPOSITORY VS. PARENT REPOSITORY
+============================================================
+
+Our directory structure is nested:
+
+    AI/
+      LangChain/
+        generativeai/
+          studymate/
+
+The outer AI folder was already a Git repository. Without a separate repository correctly initialized in StudyMate, Git commands inside that folder may operate on the outer repository.
+
+Desired arrangement:
+- the parent AI Learning repository tracks its own learning files;
+- StudyMate has its own .git directory and remote;
+- the parent ignores the child folder if the child should not be tracked by the parent;
+- commits made from StudyMate go to the StudyMate remote.
+
+A parent .gitignore pattern such as:
+
+    /LangChain/generativeai/studymate/
+    /LangChain/generativeai/faiss_index/
+
+is relative to the parent repository's root .gitignore.
+
+Important: .gitignore prevents untracked files from being added, but does not automatically stop tracking files already in Git's index. Already tracked files need to be removed from the index separately if the intention is to stop tracking them while keeping local copies.
+
+Always verify repository root and remote before committing. Do not commit API keys, .env files, private PDFs, or generated vector indexes unless you have a specific, safe reason.
+
+Warnings such as “LF will be replaced by CRLF” are common on Windows. They indicate line-ending conversion settings and are not by themselves application failures.
+
+============================================================
+19. COMMON ERRORS
+============================================================
+
+A. st.session_state has no attribute 'vector_store'
+Likely cause: accessed before initialization or PDFs were not processed in this session.
+Fix: initialize session state early and check for None before retrieval.
+
+B. Cannot find module 'rag'
+Likely cause: wrong directory, filename, interpreter, or import path.
+Fix: verify file placement, working directory, and interpreter.
+
+C. Correct topic but weak answer
+Likely cause: retrieved chunks are related but incomplete, context is poorly assembled, or the prompt is unclear.
+Fix: inspect retrieved chunks first, then improve the failing stage.
+
+D. Unsupported question gets a confident answer
+Likely cause: weak grounding instructions, misleading retrieved chunks, or the model ignoring the prompt.
+Fix: test out-of-scope questions and evaluate the response. Prompting is not a guarantee.
+
+E. Source page looks wrong
+Likely cause: zero-based versus one-based numbering, temporary paths, custom printed page labels, or lost metadata.
+Fix: inspect metadata and convert numbering once.
+
+F. Text is visible in PDF but absent from chunks
+Likely cause: extraction did not capture it, especially with scanned pages or complex layouts.
+Fix: inspect extracted text and consider OCR or another loader.
+
+G. App only works until refresh
+Likely cause: vector store or chat history exists only in session memory.
+Fix: reprocess files for now; add persistence later if needed.
+
+H. Old tutorial SDK/model name fails
+Likely cause: API or model availability changed.
+Fix: check current package/model compatibility rather than assuming old tutorial names still work.
+
+============================================================
+20. WHAT WE HAVE BUILT OR LEARNED
+============================================================
+
+We have worked on:
+- loading PDFs;
+- extracting page text;
+- splitting text into chunks;
+- generating embeddings;
+- building a FAISS vector store;
+- retrieving relevant chunks;
+- constructing context;
+- invoking an LLM for grounded answers;
+- displaying source filenames and page numbers;
+- handling unsupported questions;
+- a Streamlit chat interface;
+- storing chat messages in session state;
+- understanding conversational memory;
+- rewriting follow-up questions into standalone retrieval queries;
+- inspecting retrieved chunks in the terminal;
+- improving the answer-generation prompt;
+- diagnosing errors by inspecting the responsible component;
+- separating a child Git repository from a parent repository.
+
+The ready-queue test became clearer after the prompt was improved. This is evidence of progress, not proof of perfect reliability.
+
+============================================================
+21. WHAT IS STILL TO DO
+============================================================
+
+Do not assume these are finished just because the app runs:
+- systematic retrieval evaluation;
+- claim-to-source citation verification;
+- handling empty, corrupt, scanned, or very large PDFs;
+- persistent vector index across restarts;
+- persistent chat history across sessions;
+- upload size/type validation;
+- API failure and rate-limit handling;
+- cost and latency controls;
+- privacy/security review;
+- automated tests;
+- deployment;
+- README and architecture documentation.
+
+Build these gradually. Do not add every feature at once.
+
+============================================================
+22. RECOMMENDED NEXT STEPS
+============================================================
+
+1. Test supported questions, follow-ups, and out-of-scope questions.
+2. Inspect retrieved chunks whenever an answer is weak.
+3. Improve retrieval only when tests show it is needed.
+4. Improve citations so they genuinely support answers.
+5. Handle empty uploads, invalid PDFs, and model/API failures.
+6. Create an evaluation set with representative questions and expected behavior.
+7. Improve the UI and document the architecture in README.
+8. Verify Git status and remote, commit changes, and push to the StudyMate repository.
+9. Deploy when core behavior is stable.
+10. Later, consider hybrid search, reranking, query expansion, and advanced RAG methods only when a measured problem justifies them.
+
+Do not rush into agents or LangGraph just because they are popular. A reliable RAG project that you understand and can explain is already a valuable Applied AI project.
+
+============================================================
+23. INTERVIEW REVISION QUESTIONS
+============================================================
+
+Q: What is an embedding?
+A: A numerical vector representation of text, produced by an embedding model, used for semantic comparison.
+
+Q: What is FAISS?
+A: A library for efficient similarity search over vectors. It retrieves associated chunks; it does not generate natural-language answers.
+
+Q: What is RAG?
+A: A pattern that retrieves external information, adds it to the LLM prompt, and generates an answer grounded in that context.
+
+Q: Why chunk documents?
+A: To retrieve focused passages instead of entire large documents and keep context manageable.
+
+Q: Retrieval vs. generation?
+A: Retrieval selects evidence; generation uses the question and evidence to produce an answer.
+
+Q: Why is query rewriting useful?
+A: It turns vague follow-up questions into standalone search queries so the retriever can find relevant passages.
+
+Q: What is conversational memory?
+A: Using relevant earlier turns to understand the current turn. Session memory may not survive a restart.
+
+Q: Does RAG guarantee correctness?
+A: No. Evidence can be incomplete or irrelevant, and the model can misinterpret it.
+
+Q: Why inspect retrieved chunks?
+A: To determine whether a failure comes from extraction, chunking, retrieval, context construction, or generation.
+
+Q: Why are citations important?
+A: They let users trace answers to documents, but citations must genuinely support the claims.
+
+Q: What does k=4 mean?
+A: Request up to four retrieved chunks; it does not guarantee four relevant or correct chunks.
+
+Q: What does Streamlit session_state do?
+A: Stores values across reruns within a session, such as chat messages or a vector store, but is not permanent storage.
+
+============================================================
+24. SELF-REVISION CHECKLIST
+============================================================
+
+Try answering these without looking at the notes:
+
+[ ] Explain the complete StudyMate pipeline from PDF upload to final answer.
+[ ] Distinguish an LLM, embedding model, and FAISS.
+[ ] Explain why PDFs are split into chunks.
+[ ] Explain metadata and page numbering.
+[ ] Explain RAG in simple words.
+[ ] Explain how retrieved chunks become context.
+[ ] Explain why the answer prompt needs grounding instructions.
+[ ] Distinguish chat history from persistent memory.
+[ ] Explain query rewriting with a follow-up example.
+[ ] Explain why the rewritten query is for retrieval but the original question is answered.
+[ ] Inspect retrieved chunks in the terminal.
+[ ] Diagnose extraction vs. chunking vs. retrieval vs. generation failures.
+[ ] Explain session_state initialization.
+[ ] Explain why source citations must be verified.
+[ ] Verify which Git repository a command is operating on.
+[ ] Identify the remaining StudyMate milestones.
+
+============================================================
+25. FINAL MENTAL MODEL
+============================================================
+
+PDF loader: extracts text and metadata.
+Text splitter: divides extracted text into chunks.
+Embedding model: converts chunks and queries into vectors.
+FAISS: finds vectors similar to the query vector and returns associated chunks.
+Query rewriting: uses history to make vague follow-up questions clearer for search.
+Context construction: combines retrieved text into evidence for the LLM.
+LLM: generates a response from the prompt, question, context, and relevant history.
+Source metadata: connects chunks to source files and pages.
+Streamlit: provides the interface and session-scoped state.
+Evaluation: checks retrieval, answer correctness, unsupported questions, and citations.
+
+Most important lesson:
+A fluent answer is not enough. A strong AI application must retrieve useful evidence, use it appropriately, admit when evidence is missing, and make its behavior testable.
+
+END OF STUDYMATE REVISION NOTES
